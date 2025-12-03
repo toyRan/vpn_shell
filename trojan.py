@@ -63,7 +63,7 @@ def save_script_to_file(content, default_name):
         except Exception as e:
             messagebox.showerror("错误", f"保存文件失败: {str(e)}")
 
-# ========== 生成 Trojan 脚本 ==========
+# ========== 生成 Trojan 脚本 (已修改为 Let's Encrypt) ==========
 def generate_trojan_script():
     domain = entry_trojan_domain.get().strip()
     port = entry_trojan_port.get().strip()
@@ -77,28 +77,27 @@ def generate_trojan_script():
         messagebox.showerror("错误", "端口必须是数字！")
         return
 
-    # 注意：set +H 用于关闭历史扩展，防止密码里的 ! 报错
+    # 注意：set +H 用于关闭历史扩展
     shell_content = f"""#!/bin/bash
 # ==========================================
-# 自动部署 Trojan (Docker版)
+# 自动部署 Trojan (Docker版) - Let's Encrypt
 # ==========================================
 set +H
 
 DOMAIN="{domain}"
 PORT={port}
 PASSWORD="{password}"
-EMAIL="admin@{domain}"
 
 if [[ $EUID -ne 0 ]]; then
    echo "错误: 本脚本必须以 root 用户运行。" 
    exit 1
 fi
 
-echo ">>> [1/6] 安装基础工具..."
+echo ">>> [1/7] 安装基础工具..."
 apt-get update
 apt-get install -y ca-certificates curl gnupg socat lsof
 
-echo ">>> [2/6] 安装 Docker..."
+echo ">>> [2/7] 安装 Docker..."
 if ! command -v docker &> /dev/null; then
     install -m 0755 -d /etc/apt/keyrings
     curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
@@ -112,26 +111,35 @@ if ! command -v docker &> /dev/null; then
     systemctl start docker
 fi
 
-echo ">>> [3/6] 准备目录..."
+echo ">>> [3/7] 准备目录..."
 mkdir -p /etc/trojan
 
-echo ">>> [4/6] 申请证书..."
+echo ">>> [4/7] 申请证书 (使用 Let's Encrypt)..."
+# 确保 80 端口未被占用
 if lsof -Pi :80 -sTCP:LISTEN -t >/dev/null ; then
     echo "停止占用 80 端口的服务..."
     systemctl stop nginx || true
     systemctl stop apache2 || true
 fi
 
+# 安装 acme.sh
 curl https://get.acme.sh | sh
 source ~/.bashrc
-~/.acme.sh/acme.sh --register-account -m $EMAIL
-~/.acme.sh/acme.sh --issue -d "$DOMAIN" --standalone --force
-~/.acme.sh/acme.sh --install-cert -d "$DOMAIN" \\
+
+# === 关键修改：切换默认 CA 为 Let's Encrypt ===
+# 这能解决 ZeroSSL 连接失败的问题，且不需要邮箱
+/root/.acme.sh/acme.sh --set-default-ca --server letsencrypt
+
+# 申请证书
+/root/.acme.sh/acme.sh --issue -d "$DOMAIN" --standalone --force
+
+# 安装证书到 /etc/trojan
+/root/.acme.sh/acme.sh --install-cert -d "$DOMAIN" \\
 --key-file       /etc/trojan/server.key  \\
 --fullchain-file /etc/trojan/server.crt \\
 --reloadcmd     "docker restart trojan"
 
-echo ">>> [5/6] 生成配置..."
+echo ">>> [5/7] 生成配置..."
 cat > /etc/trojan/config.json <<EOF
 {{
     "run_type": "server",
@@ -165,11 +173,22 @@ cat > /etc/trojan/config.json <<EOF
 }}
 EOF
 
-echo ">>> [6/6] 启动容器..."
+echo ">>> [6/7] 启动容器..."
 docker rm -f trojan 2>/dev/null
 docker run -d --name trojan --restart always --net host -v /etc/trojan:/etc/trojan teddysun/trojan
 
-echo "部署完成! 端口: $PORT"
+echo ">>> [7/7] 检查状态..."
+sleep 2
+if docker ps | grep -q trojan; then
+    echo "=============================================="
+    echo "部署完成 (Let's Encrypt 模式)!"
+    echo "域名: $DOMAIN"
+    echo "端口: $PORT"
+    echo "密码: $PASSWORD"
+    echo "=============================================="
+else
+    echo "错误：容器未启动，请使用 docker logs trojan 查看日志。"
+fi
 """
     save_script_to_file(shell_content, "install_trojan.sh")
 
@@ -244,7 +263,7 @@ echo "=============================================="
 
 # ========== GUI 界面构建 ==========
 root = tk.Tk()
-root.title("全能代理部署脚本生成器 (Fix Linux Line Endings)")
+root.title("全能代理部署脚本生成器 (Let's Encrypt 版)")
 root.geometry("480x400")
 
 # 样式微调
